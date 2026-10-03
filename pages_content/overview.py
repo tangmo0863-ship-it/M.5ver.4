@@ -1,0 +1,964 @@
+"""
+pages_content/overview.py
+-------------------------
+หน้า "Overview" ของ CIS Dashboard
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from plotly.subplots import make_subplots
+
+from common import (
+    fmt_mb, fmt_ratio, safe, show_chart, render_nav_footer,
+    COMPANY_NAMES, SECTOR_MAP
+)
+
+
+def render(ctx):
+
+    st.html("""
+    <div style="margin-bottom:20px;">
+        <div style="font-size:26px; font-weight:700; color:#0F172A; letter-spacing:0.3px;">
+            STOCK OVERVIEW
+        </div>
+        <div style="font-size:16px; color:#64748B; margin-top:4px;">
+            ภาพรวมข้อมูลและการวิเคราะห์เพื่อสนับสนุนการตัดสินใจลงทุน
+        </div>
+    </div>
+    """)
+
+    m1_s = int(round(safe(ctx.stock_info.get('health_score'), 50)))
+    m2_s = int(round(safe(ctx.stock_info.get('valuation_score'), 50)))
+    m3_s = int(round(safe(ctx.stock_info.get('timing_score'), 50)))
+    m4_s = int(round(safe(ctx.stock_info.get('ai_score'), 50)))
+    m5_s = int(round(safe(ctx.stock_info.get('risk_score'), 50)))
+
+    n_all = len(ctx.scores_df)
+    overall_rank = int(ctx.stock_info.get('overall_rank', 1))
+
+    m6_s = int(round(
+        100 - (overall_rank - 1) / max(n_all - 1, 1) * 100
+    ))
+
+    # PATCH: สีของการ์ด INDUSTRY BENCHMARK ต้องล้อตาม star_color ในหน้า Industry
+    # Benchmark จริง (industry_benchmark.py) ซึ่งตัดสินจาก overall_rank/market_score
+    # (m6_s ตัวเดียวกันนี้คือ market_score ในหน้านั้นเป๊ะๆ): rank 1 = เขียว (Industry
+    # Leader), market_score >= 60 = เหลือง (Strong Competitor), ต่ำกว่านั้น = แดง
+    # (Average Performer ลงไป) — เดิม Overview ใช้ threshold 70/45 ของตัวเองซึ่ง
+    # ไม่ตรงกับหน้าจริง ทำให้สีหลุดกันได้
+    if overall_rank == 1:
+        m6_color = "#10B981"
+    elif m6_s >= 60:
+        m6_color = "#F59E0B"
+    else:
+        m6_color = "#EF4444"
+
+    n_sector = len(ctx.sector_peers)
+
+    if m1_s >= 70:
+        m1_badge, m1_desc = "EXCELLENT", "ฐานะการเงินแข็งแกร่งและมีคุณภาพทางธุรกิจที่ดี"
+    elif m1_s >= 45:
+        m1_badge, m1_desc = "MODERATE", "ฐานะการเงินมั่นคงและมีสภาพคล่องอยู่ในระดับเหมาะสม"
+    else:
+        m1_badge, m1_desc = "WEAK", "มีความเสี่ยงจากภาระหนี้หรือแรงกดดันด้านอัตรากำไร"
+
+    # PATCH: FAIR VALUE card ต้องล้อตาม logic เดียวกับหน้า Fair Value จริง (fair_value.py)
+    # ซึ่งตัดสิน badge/สี จาก margin_of_safety (val_mos) ไม่ใช่ valuation_score
+    # (>10 = UNDERVALUED เขียว, < -10 = OVERVALUED แดง, อื่นๆ = FAIR VALUE เหลือง)
+    # ส่วนตัวเลขในวงแหวนยังคงเป็น valuation_score (m2_s) เหมือนเดิม เพื่อให้ตรงกับ
+    # ตัวเลข "42/100" ที่โชว์อยู่ในหน้า Fair Value เอง (val_score ก็คือ valuation_score)
+    val_mos = safe(ctx.stock_info.get('margin_of_safety'), 10.0)
+    if val_mos > 10:
+        m2_badge, m2_desc = "UNDERVALUED", "ราคาหุ้นน่าสนใจเมื่อเทียบกับมูลค่าพื้นฐาน"
+        m2_color = "#10B981"
+    elif val_mos < -10:
+        m2_badge, m2_desc = "OVERVALUED", "ราคาหุ้นสูงกว่ามูลค่าพื้นฐานที่ประเมินได้"
+        m2_color = "#EF4444"
+    else:
+        m2_badge, m2_desc = "FAIR VALUE", "ราคาซื้อขายอยู่ใกล้เคียงกับมูลค่าพื้นฐาน"
+        m2_color = "#F59E0B"
+
+    if m3_s >= 67:
+        m3_badge, m3_desc = "BULLISH", "แนวโน้มราคาเป็นขาขึ้นและมีโมเมนตัมแข็งแกร่ง"
+    elif m3_s >= 34:
+        m3_badge, m3_desc = "NEUTRAL", "ราคากำลังแกว่งตัวใกล้แนวรับสำคัญ"
+    else:
+        m3_badge, m3_desc = "BEARISH", "แนวโน้มเป็นขาลงและมีความเสี่ยงต่อการปรับตัวลดลง"
+
+    if m4_s >= 70:
+        m4_badge, m4_desc = "POSITIVE", "โมเดล AI ประเมินโอกาสปรับตัวขึ้นในระดับที่ดี"
+    elif m4_s >= 50:
+        m4_badge, m4_desc = "NEUTRAL", "โมเดล AI คาดว่าราคามีแนวโน้มเคลื่อนไหวในกรอบ"
+    else:
+        m4_badge, m4_desc = "CAUTION", "โมเดล AI ประเมินโอกาสปรับตัวขึ้นในระดับต่ำ"
+
+    if m5_s >= 65:
+        m5_badge, m5_desc = "LOW RISK", "มีความสามารถในการรับมือความผันผวนและความเสี่ยงได้ดี"
+    elif m5_s >= 45:
+        m5_badge, m5_desc = "MODERATE", "มีระดับความเสี่ยงโดยรวมอยู่ในระดับสมดุล"
+    else:
+        m5_badge, m5_desc = "HIGH RISK", "มีความผันผวนสูงและความเสี่ยงจากการปรับตัวลงแรง"
+
+    if m6_s >= 70:
+        m6_badge, m6_desc = "OUTPERFORM", "มีผลการดำเนินงานโดดเด่นเมื่อเทียบกับบริษัทในกลุ่ม"
+    elif m6_s >= 45:
+        m6_badge, m6_desc = "PARITY", "มีผลการดำเนินงานใกล้เคียงกับค่ากลางของกลุ่ม"
+    else:
+        m6_badge, m6_desc = "LAGGING", "มีผลการดำเนินงานต่ำกว่าบริษัทอื่นในกลุ่ม"
+
+    def score_color(score, green_at, yellow_at):
+        if score >= green_at: return "#10B981"
+        elif score >= yellow_at: return "#F59E0B"
+        return "#EF4444"
+
+    def score_bg(score, green_at, yellow_at):
+        if score >= green_at: return "rgba(16,185,129,0.20)"
+        elif score >= yellow_at: return "rgba(245,158,11,0.20)"
+        return "rgba(239,68,68,0.20)"
+
+    def score_bg_light(score, green_at, yellow_at):
+        if score >= green_at: return "rgba(16,185,129,0.08)"
+        elif score >= yellow_at: return "rgba(245,158,11,0.08)"
+        return "rgba(239,68,68,0.08)"
+
+    def _rgba_from_hex(hex_color, alpha):
+        hex_color = hex_color.lstrip('#')
+        r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+
+    overall = safe(ctx.stock_info.get('overall_score'), 50)
+    rec = ctx.stock_info.get('recommendation', 'ACCUMULATE')
+
+    rec_color = {
+        "STRONG BUY": "#10B981",
+        "BUY": "#10B981",
+        "ACCUMULATE": "#10B981",
+        "REDUCE / SELL": "#EF4444"
+    }.get(rec, "#F59E0B")
+
+    rec_bg = {
+        "STRONG BUY": "rgba(16,185,129,0.12)",
+        "BUY": "rgba(16,185,129,0.12)",
+        "ACCUMULATE": "rgba(16,185,129,0.12)",
+        "REDUCE / SELL": "rgba(239,68,68,0.12)"
+    }.get(rec, "rgba(245,158,11,0.12)")
+
+    ai_bg = {
+        "STRONG BUY": "#ECFDF5",
+        "BUY": "#ECFDF5",
+        "ACCUMULATE": "#ECFDF5",
+        "REDUCE / SELL": "#FEF2F2"
+    }.get(rec, "#FFFBEB")
+
+    # PATCH: label (ATTRACTIVE/FAIR/CAUTION) ต้องคำนวณจาก "stars" โดยตรง แทนที่จะใช้
+    # เกณฑ์ overall>=65/45 แยกต่างหากจากเกณฑ์ที่ใช้ปัดดาว (ขั้นละ 20 คะแนน) เพราะ
+    # เกณฑ์เดิมตัดกลางช่วงดาวเดียวกันพอดี ทำให้หุ้นที่ได้ 2 ดาวเท่ากันบางตัวขึ้น FAIR
+    # บางตัวขึ้น CAUTION (ไม่สอดคล้องกัน) — ตอนนี้ label ผูกกับจำนวนดาวตรงๆ ทุกตัว
+    # ที่ได้ดาวเท่ากันจะได้ label เดียวกันเสมอ
+    # PATCH: ดาวเป็นสีเหลือง (star_color) เสมอ แยกออกจากสีของข้อความ label
+    # (FAIR = เขียว, CAUTION = แดง, ATTRACTIVE = เขียว)
+    stars = min(5, max(1, round(overall / 20)))
+    star_color = "#F59E0B"  # ดาวเหลืองเสมอ
+    if stars >= 4:
+        label, score_label_color = "ATTRACTIVE", "#10B981"
+    elif stars == 3:
+        label, score_label_color = "FAIR", "#10B981"
+    else:
+        label, score_label_color = "CAUTION", "#EF4444"
+
+    rec_th = {
+        "STRONG BUY": "ซื้อแรง",
+        "BUY": "ซื้อ",
+        "ACCUMULATE": "ทยอยซื้อ",
+        "REDUCE / SELL": "ขาย",
+    }.get(rec, "ถือ")
+
+    icon_char = (
+        "📈" if rec_color == "#10B981"
+        else "📉" if rec_color == "#EF4444"
+        else "➖"
+    )
+
+    st.markdown("""
+    <style>
+
+    .ai-summary-card {
+        width:100% !important;
+        max-width:100% !important;
+        min-width:0 !important;
+        box-sizing:border-box !important;
+    }
+
+    .ai-summary-grid {
+        width:100% !important;
+        max-width:100% !important;
+        min-width:0 !important;
+        box-sizing:border-box !important;
+    }
+
+    .ai-summary-section {
+        min-width:0 !important;
+        box-sizing:border-box !important;
+    }
+
+    .ai-score-section {
+        border-right:1px solid #E2E8F0;
+        padding-right:20px;
+    }
+
+    .ai-insight-section {
+        padding:0 10px;
+    }
+
+    .ai-recommendation-section {
+        min-width:0 !important;
+    }
+
+    @media (max-width: 768px) {
+
+        .ai-summary-card {
+            padding:16px !important;
+        }
+
+        .ai-summary-grid {
+            grid-template-columns:1fr !important;
+            gap:16px !important;
+        }
+
+        .ai-score-section {
+            border-right:none !important;
+            border-bottom:1px solid #E2E8F0 !important;
+            padding-right:0 !important;
+            padding-bottom:16px !important;
+        }
+
+        .ai-insight-section {
+            padding:0 !important;
+            padding-bottom:16px !important;
+            border-bottom:1px solid #E2E8F0 !important;
+        }
+
+        .ai-recommendation-section {
+            width:100% !important;
+        }
+
+        .ai-summary-card * {
+            max-width:100%;
+            box-sizing:border-box;
+        }
+
+        .ai-recommendation-inner {
+            flex-wrap:wrap !important;
+            gap:12px !important;
+        }
+
+    }
+
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.html(f"""
+    <div class="ai-summary-card"
+         style="
+            background:{ai_bg};
+            border:2px solid {rec_color};
+            border-radius:16px;
+            padding:20px 22px;
+            margin-bottom:20px;
+            width:100%;
+            max-width:100%;
+            min-width:0;
+            box-sizing:border-box;
+            box-shadow:0 3px 12px rgba(15,23,42,0.06);
+         ">
+
+        <!-- HEADER -->
+        <div style="
+            display:flex;
+            justify-content:space-between;
+            align-items:center;
+            margin-bottom:18px;
+            padding-bottom:12px;
+            border-bottom:1px solid #E2E8F0;
+        ">
+            <div style="display:flex; align-items:center; gap:14px; min-width:0;">
+
+                <div style="
+                    width:48px;
+                    height:48px;
+                    border-radius:12px;
+                    background:{rec_bg};
+                    display:flex;
+                    align-items:center;
+                    justify-content:center;
+                    font-size:22px;
+                    flex-shrink:0;
+                ">
+                    {icon_char}
+                </div>
+
+                <div style="min-width:0;">
+                    <div style="
+                        font-size:16px;
+                        font-weight:800;
+                        color:#0F172A;
+                        letter-spacing:0.6px;
+                    ">
+                        AI INVESTMENT SUMMARY
+                    </div>
+
+                    <div style="
+                        font-size:11.5px;
+                        color:#64748B;
+                        margin-top:3px;
+                    ">
+                        สรุปภาพรวมคำแนะนำการลงทุนจาก AI
+                    </div>
+                </div>
+            </div>
+
+            <div style="
+                background:{rec_bg};
+                color:{rec_color};
+                border:1px solid {rec_color};
+                border-radius:20px;
+                padding:5px 11px;
+                font-size:11px;
+                font-weight:700;
+                white-space:nowrap;
+            ">
+                {rec}
+            </div>
+        </div>
+
+
+        <!-- MAIN CONTENT -->
+        <div class="ai-summary-grid"
+             style="
+                display:grid;
+                grid-template-columns:minmax(300px,1.55fr)
+                                 minmax(180px,0.8fr)
+                                 minmax(230px,1.15fr);
+                gap:20px;
+                align-items:stretch;
+                width:100%;
+                min-width:0;
+                max-width:100%;
+                box-sizing:border-box;
+             ">
+
+
+            <!-- RECOMMENDATION -->
+            <div class="ai-summary-section ai-recommendation-section"
+                 style="
+                    background:{rec_bg};
+                    border:1px solid {rec_color};
+                    border-radius:12px;
+                    padding:16px 18px;
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:space-between;
+                    box-sizing:border-box;
+                 ">
+
+                <div style="
+                    font-size:12px;
+                    color:#64748B;
+                    font-weight:700;
+                    letter-spacing:0.6px;
+                    margin-bottom:10px;
+                ">
+                    RECOMMENDATION
+                </div>
+
+                <div style="
+                    display:flex;
+                    align-items:center;
+                    gap:11px;
+                    min-width:0;
+                 ">
+
+                    <div style="
+                        width:42px;
+                        height:42px;
+                        border-radius:10px;
+                        background:#FFFFFF;
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                        font-size:20px;
+                        flex-shrink:0;
+                    ">
+                        {icon_char}
+                    </div>
+
+                    <div style="min-width:0;">
+
+                        <div style="
+                            color:{rec_color};
+                            font-size:25px;
+                            font-weight:800;
+                            line-height:1.2;
+                        ">
+                            {rec}
+                        </div>
+
+                        <div style="
+                            color:#64748B;
+                            font-size:11.5px;
+                            margin-top:3px;
+                        ">
+                            Based on Overall Score
+                        </div>
+
+                    </div>
+                </div>
+
+                <div style="
+                    display:flex;
+                    gap:18px;
+                    margin-top:14px;
+                    padding-top:10px;
+                    border-top:1px dashed rgba(15,23,42,0.12);
+                 ">
+
+                    <div style="display:flex; align-items:center; gap:6px; font-size:12px; color:#475569;">
+                        <span style="width:9px; height:9px; border-radius:50%; background:#EF4444; display:inline-block; flex-shrink:0;"></span>
+                        ลดสัดส่วน/ขาย (Reduce/Sell)
+                    </div>
+
+                    <div style="display:flex; align-items:center; gap:6px; font-size:12px; color:#475569;">
+                        <span style="width:9px; height:9px; border-radius:50%; background:#10B981; display:inline-block; flex-shrink:0;"></span>
+                        ถือ (Hold)
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <!-- OVERALL SCORE -->
+            <div class="ai-summary-section ai-score-section"
+                 style="
+                    text-align:center;
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:center;
+                 ">
+
+                <div style="
+                    font-size:12px;
+                    font-weight:700;
+                    color:#64748B;
+                    letter-spacing:0.7px;
+                    margin-bottom:16px;
+                ">
+                    OVERALL SCORE
+                </div>
+
+                <div style="
+                    color:{star_color};
+                    font-size:32px;
+                    letter-spacing:5px;
+                    line-height:1.2;
+                ">
+                    {'★' * stars}{'☆' * (5-stars)}
+                </div>
+
+                <div style="
+                    color:{score_label_color};
+                    font-size:23px;
+                    font-weight:800;
+                    margin-top:10px;
+                    letter-spacing:0.3px;
+                ">
+                    {label}
+                </div>
+
+            </div>
+
+
+            <!-- AI INSIGHT -->
+            <div class="ai-summary-section ai-insight-section"
+                 style="
+                    display:flex;
+                    flex-direction:column;
+                    justify-content:center;
+                    text-align:left;
+                 ">
+
+                <div style="
+                    font-size:12px;
+                    font-weight:700;
+                    color:#64748B;
+                    letter-spacing:0.6px;
+                    margin-bottom:10px;
+                ">
+                    INVESTMENT INSIGHT
+                </div>
+
+                <div style="
+                    font-size:24px;
+                    font-weight:800;
+                    color:#0F172A;
+                    margin-bottom:8px;
+                    line-height:1.1;
+                ">
+                    {ctx.selected_ticker}
+                </div>
+
+                <div style="
+                    font-size:15px;
+                    color:#475569;
+                    line-height:1.85;
+                ">
+
+                    <div>
+                        จัดอยู่ในกลุ่ม
+                        <b style="color:{rec_color};">
+                            "{rec_th}" ({rec})
+                        </b>
+                    </div>
+
+                    <div>
+                        อันดับ
+                        <b style="color:#0F172A;">
+                            {overall_rank}/{n_all}
+                        </b>
+                        จากทั้งหมด ({n_all} ตัวชี้วัด)
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+    </div>
+    """)
+
+    # ============================================================
+    # TOP SECTION
+    # ============================================================
+
+    col_left, col_center = st.columns(
+        [1.1, 2.3],
+        vertical_alignment="top"
+    )
+
+    with col_left:
+
+        st.html(f"""
+        <div style="background-color:#FFFFFF;border:1px solid #E2E8F0;
+                    border-radius:12px 12px 0 0;padding:16px 16px 8px 16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span style="font-size:23px;font-weight:bold;color:#0F172A;">{ctx.selected_ticker}</span>
+                <span style="color:#64748B;font-size:18.5px;">☆</span>
+            </div>
+            <div style="font-size:14.5px;color:#64748B;margin-top:2px;">
+                {COMPANY_NAMES.get(ctx.selected_ticker,'-')}
+            </div>
+            <div style="display:flex;align-items:baseline;gap:8px;margin-top:10px;">
+                <span style="font-size:28px;font-weight:bold;color:#0F172A;line-height:1;">
+                    {ctx.current_price:.2f}
+                </span>
+                <span style="font-size:14.5px;color:#64748B;">THB</span>
+            </div>
+            <div style="font-size:15px;font-weight:bold;color:{ctx.change_color};margin-top:4px;">
+                {ctx.change_sign}{ctx.change_val:.2f} ({ctx.change_sign}{ctx.change_pct:.2f}%) {ctx.arrow_sign}
+            </div>
+            <div style="font-size:13px;color:#64748B;margin-top:4px;">
+                Dataset close &bull; {ctx.stock_info.get('latest_date','-')}
+            </div>
+        </div>
+        """)
+
+        spark = ctx.stock_daily.tail(90)
+        fig_mini = go.Figure()
+        fig_mini.add_trace(go.Scatter(
+            x=spark['date'], y=spark['close'], mode='lines',
+            line=dict(color='#10B981', width=1.5),
+            fill='tozeroy', fillcolor='rgba(16,185,129,0.08)', hoverinfo='skip'
+        ))
+        fig_mini.update_layout(
+            height=125,
+            margin=dict(l=8, r=8, t=0, b=0),
+            paper_bgcolor="#FFFFFF",
+            plot_bgcolor="#FFFFFF",
+            xaxis=dict(
+                showgrid=False, showticklabels=True,
+                tickfont=dict(size=11, color="#64748B"),
+                nticks=4, linecolor="#E2E8F0"
+            ),
+            yaxis=dict(showgrid=False, showticklabels=False)
+        )
+        st.plotly_chart(fig_mini, use_container_width=True, config={'displayModeBar': False})
+
+        market_cap = safe(ctx.stock_info.get('market_cap_mb'))
+        fcf_latest = safe(ctx.stock_info.get('free_cash_flow_latest'))
+        fcf_yield = fcf_latest / (market_cap * 1e6) * 100 if market_cap > 0 else 0
+
+        st.html(f"""
+        <div style="background-color:#FFFFFF;border:1px solid #E2E8F0;
+                    border-top:none;border-radius:0 0 12px 12px;padding:8px 16px 16px 16px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;
+                        border-top:1px solid #E2E8F0;padding-top:10px;">
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">Market Cap</div>
+                    <div style="font-size:15px;font-weight:bold;color:#0F172A;margin-top:2px;">
+                        {fmt_mb(safe(ctx.stock_info.get('market_cap_mb')) * 1e6)}
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">P/E (TTM)</div>
+                    <div style="font-size:15px;font-weight:bold;color:#0F172A;margin-top:2px;">
+                        {fmt_ratio(ctx.stock_info.get('pe_ratio'))}
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">Sector</div>
+                    <div style="font-size:15px;font-weight:bold;color:#0F172A;margin-top:2px;">
+                        {ctx.stock_info.get('sector','-').split(' ')[0]}
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">P/B (TTM)</div>
+                    <div style="font-size:15px;font-weight:bold;color:#0F172A;margin-top:2px;">
+                        {fmt_ratio(ctx.stock_info.get('pb_ratio'))}
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">Industry</div>
+                    <div style="font-size:14.5px;font-weight:bold;color:#0F172A;margin-top:2px;
+                                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                        {ctx.stock_info.get('sector','-')}
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:13px;color:#64748B;">FCF Yield</div>
+                    <div style="font-size:15px;font-weight:bold;color:#10B981;margin-top:2px;">
+                        {fcf_yield:.2f}%
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        """)
+
+    with col_center:
+
+        def module_card(num, label, score, badge, desc, green_at, yellow_at,
+                         display_value=None, display_total=None, highlight=False, color_override=None):
+            # color_override: ใช้เมื่อสีของการ์ดต้องอ้างอิงจากตัวชี้วัดอื่น (เช่น
+            # FAIR VALUE ที่ยึดสีตาม margin_of_safety เหมือนหน้า Fair Value จริง)
+            # แทนการคำนวณจาก score/green_at/yellow_at ตามปกติ — ไม่กระทบการ์ดอื่น
+            # ที่ไม่ได้ส่งค่านี้มา (ยังคำนวณสีจาก score เหมือนเดิมทุกใบ)
+            color = color_override if color_override else score_color(score, green_at, yellow_at)
+            badge_bg = _rgba_from_hex(color, 0.20) if color_override else score_bg(score, green_at, yellow_at)
+            top_val = score if display_value is None else display_value
+            bottom_val = 100 if display_total is None else display_total
+
+            # การ์ดที่ highlight=True (Industry Benchmark) จะได้พื้นหลังสีอ่อน
+            # และขอบหนาขึ้นตามสีสถานะ (เขียว/เหลือง/แดง) ส่วนการ์ดอื่นยังพื้นขาว/
+            # ขอบเทาเหมือนเดิมทั้งหมด ไม่กระทบ logic การคำนวณคะแนนใด ๆ
+            if highlight:
+                card_bg = _rgba_from_hex(color, 0.08) if color_override else score_bg_light(score, green_at, yellow_at)
+            else:
+                card_bg = "#FFFFFF"
+            card_border = color if highlight else "#E2E8F0"
+            border_width = "1.5px" if highlight else "1px"
+
+            # เลขมุมการ์ด: ถ้า num เป็น None (กรณี Industry Benchmark ที่ขึ้นเป็น
+            # การ์ดหลักตัวแรก) จะไม่ render เลขกำกับเลย
+            num_html = (
+                f"""<div style="position:absolute;top:10px;left:10px;background:{badge_bg};color:{color};
+                            font-size:14px;font-weight:bold;padding:3px 7px;border-radius:5px;">
+                    {num}
+                </div>"""
+                if num else ""
+            )
+
+            return f"""
+            <div class="overview-module-card"
+                 style="background-color:{card_bg};border:{border_width} solid {card_border};border-radius:10px;
+                        padding:12px 12px;text-align:center;position:relative;
+                        width:100%;min-width:0;max-width:100%;box-sizing:border-box;">
+                {num_html}
+                <div style="display:flex;justify-content:center;align-items:center;margin-bottom:10px;">
+                    <span style="font-size:15px;font-weight:bold;color:#0F172A;">{label}</span>
+                </div>
+                <div style="margin:0 auto 10px auto;width:88px;height:88px;border-radius:50%;
+                            background:conic-gradient({color} 0% {score}%,#E2E8F0 {score}% 100%);
+                            display:flex;align-items:center;justify-content:center;">
+                    <div style="width:72px;height:72px;border-radius:50%;background-color:#FFFFFF;
+                                display:flex;flex-direction:column;align-items:center;justify-content:center;">
+                        <span style="font-size:20px;font-weight:bold;color:#0F172A;line-height:1;">
+                            {top_val}
+                        </span>
+                        <span style="font-size:13.5px;color:#64748B;">{bottom_val}</span>
+                    </div>
+                </div>
+                <div style="color:{color};font-size:15.5px;font-weight:bold;margin-bottom:5px;">
+                    {badge}
+                </div>
+                <div style="font-size:14.5px;color:#475569;line-height:1.4;">{desc}</div>
+            </div>
+            """
+
+        # Industry Benchmark ขึ้นเป็นการ์ดแรก (ตัวหลัก) ไม่มีเลขกำกับ และมี
+        # พื้นหลัง/ขอบไฮไลต์ตามสถานะคะแนน ส่วนการ์ดที่เหลือ (01-05) เรียงลำดับ
+        # และใช้เลขกำกับเหมือนเดิมทุกประการ
+        cards_html = "".join([
+            module_card(None, "INDUSTRY BENCHMARK", m6_s, m6_badge, m6_desc, 70, 45,
+                        display_value=overall_rank, display_total=n_all, highlight=True, color_override=m6_color),
+            module_card("01", "COMPANY HEALTH", m1_s, m1_badge, m1_desc, 70, 45),
+            module_card("02", "FAIR VALUE", m2_s, m2_badge, m2_desc, 67, 34, color_override=m2_color),
+            module_card("03", "ENTRY TIMING", m3_s, m3_badge, m3_desc, 67, 34),
+            module_card("04", "AI PREDICTION", m4_s, m4_badge, m4_desc, 70, 50),
+            module_card("05", "RISK ANALYSIS", m5_s, m5_badge, m5_desc, 65, 45),
+        ])
+
+        st.markdown("""
+        <style>
+
+        .overview-decision-card {
+            width:100% !important;
+            max-width:100% !important;
+            min-width:0 !important;
+            box-sizing:border-box !important;
+        }
+
+        .overview-module-grid {
+            width:100% !important;
+            max-width:100% !important;
+            min-width:0 !important;
+            box-sizing:border-box !important;
+
+            height:calc(100% - 32px) !important;
+            grid-template-rows:repeat(2, minmax(0, 1fr)) !important;
+        }
+
+        .overview-module-card {
+            width:100% !important;
+            max-width:100% !important;
+            min-width:0 !important;
+            min-height:0 !important;
+            height:100% !important;
+            box-sizing:border-box !important;
+            overflow:hidden !important;
+        }
+
+        @media (max-width: 768px) {
+
+            .overview-decision-card {
+                height:auto !important;
+                margin-top:0 !important;
+            }
+
+            .overview-module-grid {
+                height:auto !important;
+                grid-template-columns:1fr !important;
+                grid-template-rows:none !important;
+            }
+
+            .overview-module-card {
+                height:auto !important;
+                min-height:0 !important;
+                overflow:visible !important;
+            }
+
+        }
+
+        </style>
+        """, unsafe_allow_html=True)
+
+        st.html(f"""
+            <div class="overview-decision-card"
+                 style="background-color:#FFFFFF;border:1px solid #E2E8F0;
+                        border-radius:12px;padding:16px;
+                        height:532px;box-sizing:border-box;
+                        margin-top:-16px;">
+                <div style="font-size:15px;font-weight:bold;color:#0F172A;
+                            letter-spacing:0.5px;margin-bottom:12px;">
+                    INVESTMENT DECISION OVERVIEW ({ctx.selected_ticker})
+                </div>
+
+                <div class="overview-module-grid"
+                     style="display:grid;
+                            grid-template-columns:repeat(3,minmax(0,1fr));
+                            grid-template-rows:repeat(2,minmax(0,1fr));
+                            gap:12px;
+                            width:100%;
+                            min-width:0;
+                            height:calc(100% - 32px);
+                            box-sizing:border-box;">
+                    {cards_html}
+                </div>
+            </div>
+        """)
+
+    rev_g = ctx.stock_info.get('revenue_growth_yoy')
+    ni_g = ctx.stock_info.get('net_income_growth_yoy')
+    fcf_val = ctx.stock_info.get('free_cash_flow_latest')
+    de_val = safe(ctx.stock_info.get('de_ratio'))
+    roe_val = safe(ctx.stock_info.get('roe'))
+    industry_rank_txt = f"{int(ctx.stock_info.get('sector_rank',1))} / {n_sector}"
+
+    def hl_card(icon, bg, label, value, sub, val_color="#0F172A"):
+        return f"""
+        <div style="background-color:#F8FAFC;border:1px solid #E2E8F0;border-radius:8px;
+                    padding:10px 12px;display:flex;align-items:center;gap:10px;
+                    width:100%;min-width:0;max-width:100%;box-sizing:border-box;">
+            <div style="background:{bg};width:40px;height:40px;border-radius:8px;
+                        display:flex;align-items:center;justify-content:center;font-size:17.5px;">
+                {icon}
+            </div>
+            <div>
+                <div style="font-size:13px;color:#64748B;">{label}</div>
+                <div style="font-size:16px;font-weight:bold;color:{val_color};margin-top:1px;">
+                    {value}
+                </div>
+                <div style="font-size:12px;color:#64748B;">{sub}</div>
+            </div>
+        </div>
+        """
+
+    hl_html = "".join([
+        hl_card(
+            "📊", "rgba(16,185,129,0.15)", "Revenue Growth",
+            f"{'+' if (rev_g or 0) >= 0 else ''}{rev_g if rev_g is not None else 0:.1f}%",
+            "YoY (latest FY)", "#10B981" if (rev_g or 0) >= 0 else "#EF4444"
+        ),
+        hl_card(
+            "💰", "rgba(245,158,11,0.15)", "Net Profit Growth",
+            f"{'+' if (ni_g or 0) >= 0 else ''}{ni_g if ni_g is not None else 0:.1f}%",
+            "YoY (latest FY)", "#10B981" if (ni_g or 0) >= 0 else "#EF4444"
+        ),
+        hl_card(
+            "⏱️", "rgba(56,189,248,0.15)", "ROE (TTM)",
+            f"{roe_val:.1f}%", "Return on Equity", "#38BDF8"
+        ),
+        hl_card(
+            "💵", "rgba(168,85,247,0.15)", "Free Cash Flow",
+            fmt_mb(safe(fcf_val)), "Latest FY", "#0F172A"
+        ),
+        hl_card(
+            "🛡️", "rgba(249,115,22,0.15)", "Debt to Equity",
+            f"{de_val:.2f}", "Lower is safer", "#FB923C"
+        ),
+        hl_card(
+            "🏆", "rgba(20,184,166,0.15)", "Sector Rank",
+            industry_rank_txt, f"In {ctx.stock_info.get('sector','-')}", "#2DD4BF"
+        )
+    ])
+
+    st.markdown("""
+    <style>
+    @media (max-width: 768px) {
+
+        .key-highlights-grid {
+            grid-template-columns:1fr !important;
+            width:100% !important;
+            max-width:100% !important;
+        }    
+
+        .key-highlights-grid > div {
+            width:100% !important;
+            max-width:100% !important;
+            min-width:0 !important;
+            box-sizing:border-box !important;
+        }
+
+        .overview-decision-card {
+            height:auto !important;
+        }
+
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.html(f"""
+    <div style="background-color:#FFFFFF;border:1px solid #E2E8F0;
+                border-radius:12px;padding:14px 16px;">
+        <div style="font-size:14.5px;font-weight:bold;color:#64748B;
+                    margin-bottom:10px;letter-spacing:0.5px;">
+            KEY HIGHLIGHTS
+        </div>
+        <div class="key-highlights-grid"
+             style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));
+                    gap:10px;width:100%;min-width:0;">
+            {hl_html}
+        </div>
+    </div>
+    """)
+
+    col1, col2, col3 = st.columns([2.7, 1.3, 0.5])
+
+    st.markdown("<div style='margin-top:24px;'></div>", unsafe_allow_html=True)
+
+    st.markdown(
+        """
+        <div style="
+            border-top:1px solid #E2E8F0;
+            padding-top:16px;
+            margin-bottom:6px;
+        "></div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    col_prev, col_home, col_next, col_disc = st.columns(
+        [1.3, 1.3, 1.3, 3.3]
+    )
+
+    with col_prev:
+        if st.button(
+            "⬅ หน้าก่อนหน้า",
+            key="overview_prev_industry_benchmark",
+            use_container_width=True
+        ):
+            st.session_state["pending_nav"] = " Industry Benchmark"
+            st.rerun()
+
+    with col_home:
+        if st.button(
+            "หน้าหลัก",
+            key="overview_home",
+            use_container_width=True
+        ):
+            st.session_state["pending_nav"] = " Industry Benchmark"
+            st.rerun()
+
+    with col_next:
+        if st.button(
+            "หน้าถัดไป ➡",
+            key="overview_next_company_health",
+            use_container_width=True
+        ):
+            st.session_state["pending_nav"] = " Company Health"
+            st.rerun()
+
+    with col_disc:
+        st.markdown(
+            """
+            <div style="
+                font-size:15.5px;
+                color:#64748B;
+                text-align:right;
+                padding-top:11px;
+                line-height:1.5;
+            ">
+                หมายเหตุ: การประเมินนี้ไม่ใช่คำแนะนำในการลงทุน
+                ผู้ลงทุนควรศึกษาข้อมูลเพิ่มเติม
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
